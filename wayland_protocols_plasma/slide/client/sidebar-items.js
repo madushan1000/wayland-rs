@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":[["__interfaces",""],["org_kde_kwin_slide","slide a surface from a location to another"],["org_kde_kwin_slide_manager",""]]};

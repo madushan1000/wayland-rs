@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":[["__interfaces",""],["org_kde_kwin_server_decoration_palette","server side decoration palette interface"],["org_kde_kwin_server_decoration_palette_manager","server side decoration palette manager interface"]]};

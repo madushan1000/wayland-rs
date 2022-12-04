@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":[["__interfaces",""],["org_kde_kwin_dpms","Dpms for a wl_output"],["org_kde_kwin_dpms_manager","Output dpms manager"]]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":[["__interfaces",""],["org_kde_kwin_outputconfiguration","configure single output devices"],["org_kde_kwin_outputmanagement","configuration of server outputs through clients"]]};

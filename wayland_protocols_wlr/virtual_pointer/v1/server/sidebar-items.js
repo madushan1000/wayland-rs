@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":[["__interfaces",""],["zwlr_virtual_pointer_manager_v1","virtual pointer manager"],["zwlr_virtual_pointer_v1","virtual pointer"]]};

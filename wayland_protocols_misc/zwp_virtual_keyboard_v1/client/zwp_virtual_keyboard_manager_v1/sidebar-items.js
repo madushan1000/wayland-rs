@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":[["REQ_CREATE_VIRTUAL_KEYBOARD_OPCODE","The wire opcode for this request"],["REQ_CREATE_VIRTUAL_KEYBOARD_SINCE","The minimal object version supporting this request"]],"enum":[["Error",""],["Event",""],["Request",""]],"struct":[["ZwpVirtualKeyboardManagerV1","virtual keyboard manager"]]};
