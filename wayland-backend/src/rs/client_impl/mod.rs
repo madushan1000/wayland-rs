@@ -2,10 +2,7 @@
 
 use std::{
     fmt,
-    os::unix::{
-        io::{AsRawFd, RawFd},
-        net::UnixStream,
-    },
+    os::unix::io::RawFd,
     sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
 };
 
@@ -23,7 +20,7 @@ use smallvec::SmallVec;
 use super::{
     client::*,
     map::{Object, ObjectMap, SERVER_ID_LIMIT},
-    socket::{BufferedSocket, Socket},
+    socket::{WaylandBufferedSocket, WaylandSocket},
     wire::MessageParseError,
 };
 
@@ -92,7 +89,7 @@ impl InnerObjectId {
 
 #[derive(Debug)]
 struct ProtocolState {
-    socket: BufferedSocket,
+    socket: Box<dyn WaylandBufferedSocket>,
     map: ObjectMap<Data>,
     last_error: Option<WaylandError>,
     last_serial: u32,
@@ -122,6 +119,7 @@ impl ConnectionState {
     }
 }
 
+
 #[derive(Clone, Debug)]
 pub struct InnerBackend {
     state: Arc<ConnectionState>,
@@ -143,8 +141,9 @@ impl InnerBackend {
         WeakInnerBackend { state: Arc::downgrade(&self.state) }
     }
 
-    pub fn connect(stream: UnixStream) -> Result<Self, NoWaylandLib> {
-        let socket = BufferedSocket::new(Socket::from(stream));
+    pub fn connect(stream: impl WaylandSocket) -> Result<Self, NoWaylandLib> {
+        //let socket = BufferedSocket::new(Socket::from(stream));
+        let socket = Box::new(stream.as_socket());
         let mut map = ObjectMap::new();
         map.insert_at(
             1,
@@ -601,11 +600,11 @@ fn dispatch_events(state: Arc<ConnectionState>) -> Result<usize, WaylandError> {
     loop {
         // Attempt to read a message
         let ProtocolState { ref mut socket, ref map, .. } = *guard;
-        let message = match socket.read_one_message(|id, opcode| {
+        let message = match socket.read_one_message(&mut Box::new(|id, opcode| {
             map.find(id)
                 .and_then(|o| o.interface.events.get(opcode as usize))
                 .map(|desc| desc.signature)
-        }) {
+        })) {
             Ok(msg) => msg,
             Err(MessageParseError::MissingData) | Err(MessageParseError::MissingFD) => {
                 // need to read more data

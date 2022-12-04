@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 
 use crate::rs::{
     map::{Object, ObjectMap},
-    socket::{BufferedSocket, Socket},
+    socket::{WaylandBufferedSocket, WaylandSocket},
     wire::MessageParseError,
 };
 
@@ -42,7 +42,7 @@ pub(crate) enum DisplayError {
 
 #[derive(Debug)]
 pub(crate) struct Client<D: 'static> {
-    socket: BufferedSocket,
+    socket: Box<dyn WaylandBufferedSocket>,
     pub(crate) map: ObjectMap<Data<D>>,
     debug: bool,
     last_serial: u32,
@@ -60,12 +60,12 @@ impl<D> Client<D> {
 
 impl<D> Client<D> {
     pub(crate) fn new(
-        stream: UnixStream,
+        stream: impl WaylandSocket,
         id: InnerClientId,
         debug: bool,
         data: Arc<dyn ClientData>,
     ) -> Self {
-        let socket = BufferedSocket::new(Socket::from(stream));
+        let socket = stream.as_socket();
         let mut map = ObjectMap::new();
         map.insert_at(
             1,
@@ -79,7 +79,7 @@ impl<D> Client<D> {
 
         data.initialized(ClientId { id: id.clone() });
 
-        Self { socket, map, debug, id, killed: false, last_serial: 0, data }
+        Self { socket: Box::new(socket), map, debug, id, killed: false, last_serial: 0, data }
     }
 
     pub(crate) fn create_object(
@@ -291,7 +291,6 @@ impl<D> Client<D> {
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) fn get_credentials(&self) -> Credentials {
-        use std::os::unix::io::AsRawFd;
         let creds = nix::sys::socket::getsockopt(
             self.socket.as_raw_fd(),
             nix::sys::socket::sockopt::PeerCredentials,
@@ -336,11 +335,11 @@ impl<D> Client<D> {
         }
         loop {
             let map = &self.map;
-            let msg = match self.socket.read_one_message(|id, opcode| {
+            let msg = match self.socket.read_one_message(&mut Box::new(|id, opcode| {
                 map.find(id)
                     .and_then(|o| o.interface.requests.get(opcode as usize))
                     .map(|desc| desc.signature)
-            }) {
+            })) {
                 Ok(msg) => msg,
                 Err(MessageParseError::MissingData) | Err(MessageParseError::MissingFD) => {
                     // need to read more data

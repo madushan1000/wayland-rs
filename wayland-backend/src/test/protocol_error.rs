@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::rs::socket::{BufferedSocket, Socket};
+use crate::rs::socket::{WaylandBufferedSocket, BufferedSocket, Socket};
 
 use super::*;
 

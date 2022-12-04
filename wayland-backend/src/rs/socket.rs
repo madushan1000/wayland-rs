@@ -3,6 +3,7 @@
 use std::io::{ErrorKind, IoSlice, IoSliceMut, Result as IoResult};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::fmt;
 
 use io_lifetimes::{AsFd, BorrowedFd, OwnedFd};
 use nix::sys::socket;
@@ -15,6 +16,30 @@ use super::wire::{parse_message, write_to_buffers, MessageParseError, MessageWri
 pub const MAX_FDS_OUT: usize = 28;
 /// Maximum number of bytes that can be sent in a single socket message
 pub const MAX_BYTES_OUT: usize = 4096;
+
+//plugable transport traits
+
+pub trait WaylandBufferedSocket: fmt::Debug + AsRawFd + AsFd + Send {
+    fn flush(&mut self) -> IoResult<()>;
+    fn write_message(&mut self, msg: &Message<u32, RawFd>) -> IoResult<()>;
+    fn read_one_message(
+        &mut self,
+        signature: &mut dyn FnMut(u32, u16) -> Option<&'static [ArgumentType]>,
+    ) -> Result<Message<u32, OwnedFd>, MessageParseError>;
+    fn fill_incoming_buffers(&mut self) -> IoResult<()>;
+}
+
+pub trait WaylandSocket: fmt::Debug {
+    type Buffered: WaylandBufferedSocket + 'static;
+    fn as_socket(self) -> Self::Buffered;
+}
+
+impl WaylandSocket for UnixStream {
+    type Buffered = BufferedSocket;
+    fn as_socket(self) -> BufferedSocket {
+        BufferedSocket::new(Socket::from(self))
+    }
+}
 
 /*
  * Socket
@@ -127,29 +152,7 @@ impl BufferedSocket {
         }
     }
 
-    /// Flush the contents of the outgoing buffer into the socket
-    pub fn flush(&mut self) -> IoResult<()> {
-        let written = {
-            let words = self.out_data.get_contents();
-            if words.is_empty() {
-                return Ok(());
-            }
-            let bytes = unsafe {
-                ::std::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 4)
-            };
-            let fds = self.out_fds.get_contents();
-            let written = self.socket.send_msg(bytes, fds)?;
-            for &fd in fds {
-                // once the fds are sent, we can close them
-                let _ = ::nix::unistd::close(fd);
-            }
-            written
-        };
-        self.out_data.offset(written / 4);
-        self.out_data.move_to_front();
-        self.out_fds.clear();
-        Ok(())
-    }
+
 
     // internal method
     //
@@ -173,6 +176,32 @@ impl BufferedSocket {
             Err(MessageWriteError::DupFdFailed(e)) => Err(e),
         }
     }
+}
+
+impl WaylandBufferedSocket for BufferedSocket {
+    /// Flush the contents of the outgoing buffer into the socket
+    fn flush(&mut self) -> IoResult<()> {
+        let written = {
+            let words = self.out_data.get_contents();
+            if words.is_empty() {
+                return Ok(());
+            }
+            let bytes = unsafe {
+                ::std::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 4)
+            };
+            let fds = self.out_fds.get_contents();
+            let written = self.socket.send_msg(bytes, fds)?;
+            for &fd in fds {
+                // once the fds are sent, we can close them
+                let _ = ::nix::unistd::close(fd);
+            }
+            written
+        };
+        self.out_data.offset(written / 4);
+        self.out_data.move_to_front();
+        self.out_fds.clear();
+        Ok(())
+    }
 
     /// Write a message to the outgoing buffer
     ///
@@ -180,7 +209,7 @@ impl BufferedSocket {
     ///
     /// If the message is too big to fit in the buffer, the error `Error::Sys(E2BIG)`
     /// will be returned.
-    pub fn write_message(&mut self, msg: &Message<u32, RawFd>) -> IoResult<()> {
+    fn write_message(&mut self, msg: &Message<u32, RawFd>) -> IoResult<()> {
         if !self.attempt_write_message(msg)? {
             // the attempt failed, there is not enough space in the buffer
             // we need to flush it
@@ -197,10 +226,9 @@ impl BufferedSocket {
         }
         Ok(())
     }
-
     /// Try to fill the incoming buffers of this socket, to prepare
     /// a new round of parsing.
-    pub fn fill_incoming_buffers(&mut self) -> IoResult<()> {
+    fn fill_incoming_buffers(&mut self) -> IoResult<()> {
         // reorganize the buffers
         self.in_data.move_to_front();
         self.in_fds.move_to_front();
@@ -222,18 +250,15 @@ impl BufferedSocket {
         self.in_fds.advance(in_fds);
         Ok(())
     }
-
     /// Read and deserialize a single message from the incoming buffers socket
     ///
     /// This method requires one closure that given an object id and an opcode,
     /// must provide the signature of the associated request/event, in the form of
     /// a `&'static [ArgumentType]`.
-    pub fn read_one_message<F>(
+    fn read_one_message(
         &mut self,
-        mut signature: F,
+        signature:  &mut dyn FnMut(u32, u16) -> Option<&'static [ArgumentType]>,
     ) -> Result<Message<u32, OwnedFd>, MessageParseError>
-    where
-        F: FnMut(u32, u16) -> Option<&'static [ArgumentType]>,
     {
         let (msg, read_data, read_fd) = {
             let data = self.in_data.get_contents();
@@ -410,13 +435,13 @@ mod tests {
 
         let ret_msg =
             server
-                .read_one_message(|sender_id, opcode| {
+                .read_one_message(&mut Box::new(|sender_id, opcode| {
                     if sender_id == 42 && opcode == 7 {
                         Some(SIGNATURE)
                     } else {
                         None
                     }
-                })
+                }))
                 .unwrap();
 
         assert_eq_msgs(&msg.map_fd(|fd| fd.as_raw_fd()), &ret_msg.map_fd(IntoRawFd::into_raw_fd));
@@ -446,13 +471,13 @@ mod tests {
 
         let ret_msg =
             server
-                .read_one_message(|sender_id, opcode| {
+                .read_one_message(&mut Box::new(|sender_id, opcode| {
                     if sender_id == 42 && opcode == 7 {
                         Some(SIGNATURE)
                     } else {
                         None
                     }
-                })
+                }))
                 .unwrap();
         assert_eq_msgs(&msg.map_fd(|fd| fd.as_raw_fd()), &ret_msg.map_fd(IntoRawFd::into_raw_fd));
     }
@@ -504,13 +529,13 @@ mod tests {
         server.fill_incoming_buffers().unwrap();
 
         let mut recv_msgs = Vec::new();
-        while let Ok(message) = server.read_one_message(|sender_id, opcode| {
+        while let Ok(message) = server.read_one_message(&mut Box::new(|sender_id, opcode| {
             if sender_id == 42 {
                 Some(SIGNATURES[opcode as usize])
             } else {
                 None
             }
-        }) {
+        })) {
             recv_msgs.push(message);
         }
         assert_eq!(recv_msgs.len(), 3);
@@ -545,13 +570,13 @@ mod tests {
 
         let ret_msg =
             server
-                .read_one_message(|sender_id, opcode| {
+                .read_one_message(&mut Box::new(|sender_id, opcode| {
                     if sender_id == 2 && opcode == 0 {
                         Some(SIGNATURE)
                     } else {
                         None
                     }
-                })
+                }))
                 .unwrap();
 
         assert_eq_msgs(&msg.map_fd(|fd| fd.as_raw_fd()), &ret_msg.map_fd(IntoRawFd::into_raw_fd));
